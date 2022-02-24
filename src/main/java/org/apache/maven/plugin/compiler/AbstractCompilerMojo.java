@@ -22,7 +22,6 @@ package org.apache.maven.plugin.compiler;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
@@ -37,34 +36,26 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
+import java.util.stream.Collectors;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.DefaultArtifact;
-import org.apache.maven.artifact.handler.ArtifactHandler;
-import org.apache.maven.artifact.handler.manager.ArtifactHandlerManager;
-import org.apache.maven.artifact.resolver.ArtifactResolutionRequest;
-import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
-import org.apache.maven.artifact.resolver.ResolutionErrorHandler;
-import org.apache.maven.artifact.versioning.VersionRange;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoExecution;
-import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.api.MojoExecution;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.Toolchain;
+import org.apache.maven.api.plugin.Mojo;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.services.ProjectManager;
+import org.apache.maven.api.services.ToolchainManager;
 import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.project.MavenProject;
-import org.apache.maven.repository.RepositorySystem;
-import org.apache.maven.shared.incremental.IncrementalBuildHelper;
-import org.apache.maven.shared.incremental.IncrementalBuildHelperRequest;
 import org.apache.maven.shared.utils.ReaderFactory;
 import org.apache.maven.shared.utils.StringUtils;
 import org.apache.maven.shared.utils.io.FileUtils;
 import org.apache.maven.shared.utils.logging.MessageBuilder;
 import org.apache.maven.shared.utils.logging.MessageUtils;
-import org.apache.maven.toolchain.Toolchain;
-import org.apache.maven.toolchain.ToolchainManager;
 import org.codehaus.plexus.compiler.Compiler;
 import org.codehaus.plexus.compiler.CompilerConfiguration;
 import org.codehaus.plexus.compiler.CompilerError;
@@ -82,6 +73,8 @@ import org.codehaus.plexus.compiler.util.scan.mapping.SourceMapping;
 import org.codehaus.plexus.compiler.util.scan.mapping.SuffixMapping;
 import org.codehaus.plexus.languages.java.jpms.JavaModuleDescriptor;
 import org.codehaus.plexus.languages.java.version.JavaVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * TODO: At least one step could be optimized, currently the plugin will do two
@@ -93,8 +86,7 @@ import org.codehaus.plexus.languages.java.version.JavaVersion;
  * @author <a href="mailto:trygvis@inamo.no">Trygve Laugst&oslash;l</a>
  * @since 2.0
  */
-public abstract class AbstractCompilerMojo
-    extends AbstractMojo
+public abstract class AbstractCompilerMojo implements Mojo
 {
     protected static final String PS = System.getProperty( "path.separator" );
 
@@ -104,7 +96,9 @@ public abstract class AbstractCompilerMojo
     
     // Used to compare with older targets
     static final String MODULE_INFO_TARGET = "1.9";
-    
+
+    protected final Logger logger = LoggerFactory.getLogger( getClass() );
+
     // ----------------------------------------------------------------------
     // Configurables
     // ----------------------------------------------------------------------
@@ -446,14 +440,14 @@ public abstract class AbstractCompilerMojo
      * The current build session instance. This is used for toolchain manager API calls.
      */
     @Parameter( defaultValue = "${session}", readonly = true, required = true )
-    private MavenSession session;
+    private Session session;
 
     /**
      * The current project instance. This is used for propagating generated-sources paths as compile/testCompile source
      * roots.
      */
     @Parameter( defaultValue = "${project}", readonly = true, required = true )
-    private MavenProject project;
+    private Project project;
 
     /**
      * Strategy to re use javacc class created:
@@ -521,22 +515,15 @@ public abstract class AbstractCompilerMojo
     private boolean useIncrementalCompilation = true;
 
     /**
-     * Resolves the artifacts needed.
+     * Manages projects
      */
     @Component
-    private RepositorySystem repositorySystem;
+    private ProjectManager projectManager;
 
-    /**
-     * Artifact handler manager.
-     */
-    @Component
-    private ArtifactHandlerManager artifactHandlerManager;
-
-    /**
-     * Throws an exception on artifact resolution errors.
-     */
-    @Component
-    private ResolutionErrorHandler resolutionErrorHandler;
+    public ProjectManager getProjectManager()
+    {
+        return projectManager;
+    }
 
     protected abstract SourceInclusionScanner getSourceInclusionScanner( int staleMillis );
 
@@ -566,7 +553,7 @@ public abstract class AbstractCompilerMojo
 
     protected abstract File getGeneratedSourcesDirectory();
 
-    protected final MavenProject getProject()
+    protected final Project getProject()
     {
         return project;
     }
@@ -575,7 +562,7 @@ public abstract class AbstractCompilerMojo
 
     @Override
     public void execute()
-        throws MojoExecutionException, CompilationFailureException
+        throws MojoException, CompilationFailureException
     {
         // ----------------------------------------------------------------------
         // Look up the compiler. This is done before other code than can
@@ -585,7 +572,7 @@ public abstract class AbstractCompilerMojo
 
         Compiler compiler;
 
-        getLog().debug( "Using compiler '" + compilerId + "'." );
+        logger.debug( "Using compiler '" + compilerId + "'." );
 
         try
         {
@@ -593,7 +580,7 @@ public abstract class AbstractCompilerMojo
         }
         catch ( NoSuchCompilerException e )
         {
-            throw new MojoExecutionException( "No such compiler '" + e.getCompilerId() + "'." );
+            throw new MojoException( "No such compiler '" + e.getCompilerId() + "'." );
         }
 
         //-----------toolchains start here ----------------------------------
@@ -601,10 +588,10 @@ public abstract class AbstractCompilerMojo
         Toolchain tc = getToolchain();
         if ( tc != null )
         {
-            getLog().info( "Toolchain in maven-compiler-plugin: " + tc );
+            logger.info( "Toolchain in maven-compiler-plugin: " + tc );
             if ( executable != null )
             {
-                getLog().warn( "Toolchains are ignored, 'executable' parameter is set to " + executable );
+                logger.warn( "Toolchains are ignored, 'executable' parameter is set to " + executable );
             }
             else
             {
@@ -621,7 +608,7 @@ public abstract class AbstractCompilerMojo
 
         if ( compileSourceRoots.isEmpty() )
         {
-            getLog().info( "No sources to compile" );
+            logger.info( "No sources to compile" );
 
             return;
         }
@@ -635,7 +622,7 @@ public abstract class AbstractCompilerMojo
 
             writePlugin( mb );
 
-            getLog().warn( mb.toString() );
+            logger.warn( mb.toString() );
         }
 
         // ----------------------------------------------------------------------
@@ -700,26 +687,26 @@ public abstract class AbstractCompilerMojo
 
             if ( isTestCompile() )
             {
-                getLog().debug( "Adding " + generatedSourcesPath + " to test-compile source roots:\n  "
-                                    + StringUtils.join( project.getTestCompileSourceRoots()
+                logger.debug( "Adding " + generatedSourcesPath + " to test-compile source roots:\n  "
+                                    + StringUtils.join( projectManager.getTestCompileSourceRoots( project )
                                                                .iterator(), "\n  " ) );
 
-                project.addTestCompileSourceRoot( generatedSourcesPath );
+                projectManager.addTestCompileSourceRoot( project, generatedSourcesPath );
 
-                getLog().debug( "New test-compile source roots:\n  "
-                                    + StringUtils.join( project.getTestCompileSourceRoots()
+                logger.debug( "New test-compile source roots:\n  "
+                                    + StringUtils.join( projectManager.getTestCompileSourceRoots( project )
                                                                .iterator(), "\n  " ) );
             }
             else
             {
-                getLog().debug( "Adding " + generatedSourcesPath + " to compile source roots:\n  "
-                                    + StringUtils.join( project.getCompileSourceRoots()
+                logger.debug( "Adding " + generatedSourcesPath + " to compile source roots:\n  "
+                                    + StringUtils.join( projectManager.getCompileSourceRoots( project )
                                                                .iterator(), "\n  " ) );
 
-                project.addCompileSourceRoot( generatedSourcesPath );
+                projectManager.addCompileSourceRoot( project, generatedSourcesPath );
 
-                getLog().debug( "New compile source roots:\n  " + StringUtils.join( project.getCompileSourceRoots()
-                                                                                           .iterator(), "\n  " ) );
+                logger.debug( "New compile source roots:\n  " + StringUtils.join(
+                        projectManager.getCompileSourceRoots( project ).iterator(), "\n  " ) );
             }
         }
 
@@ -745,7 +732,7 @@ public abstract class AbstractCompilerMojo
                 }
                 else
                 {
-                    getLog().info( "Invalid value for meminitial '" + meminitial + "'. Ignoring this option." );
+                    logger.info( "Invalid value for meminitial '" + meminitial + "'. Ignoring this option." );
                 }
             }
 
@@ -759,7 +746,7 @@ public abstract class AbstractCompilerMojo
                 }
                 else
                 {
-                    getLog().info( "Invalid value for maxmem '" + maxmem + "'. Ignoring this option." );
+                    logger.info( "Invalid value for maxmem '" + maxmem + "'. Ignoring this option." );
                 }
             }
         }
@@ -785,7 +772,7 @@ public abstract class AbstractCompilerMojo
             {
                 if ( !skipMultiThreadWarning )
                 {
-                    getLog().warn( "You are in a multi-thread build and compilerReuseStrategy is set to reuseSame."
+                    logger.warn( "You are in a multi-thread build and compilerReuseStrategy is set to reuseSame."
                                        + " This can cause issues in some environments (os/jdk)!"
                                        + " Consider using reuseCreated strategy."
                                        + System.getProperty( "line.separator" )
@@ -802,13 +789,13 @@ public abstract class AbstractCompilerMojo
             compilerConfiguration.setCompilerReuseStrategy( CompilerConfiguration.CompilerReuseStrategy.ReuseCreated );
         }
 
-        getLog().debug( "CompilerReuseStrategy: " + compilerConfiguration.getCompilerReuseStrategy().getStrategy() );
+        logger.debug( "CompilerReuseStrategy: " + compilerConfiguration.getCompilerReuseStrategy().getStrategy() );
 
         compilerConfiguration.setForceJavacCompilerUse( forceJavacCompilerUse );
 
         boolean canUpdateTarget;
 
-        IncrementalBuildHelper incrementalBuildHelper = new IncrementalBuildHelper( mojoExecution, session );
+        IncrementalBuildHelper incrementalBuildHelper = new IncrementalBuildHelper( mojoExecution, project );
 
         final Set<File> sources;
 
@@ -816,7 +803,7 @@ public abstract class AbstractCompilerMojo
 
         if ( useIncrementalCompilation )
         {
-            getLog().debug( "useIncrementalCompilation enabled" );
+            logger.debug( "useIncrementalCompilation enabled" );
             try
             {
                 canUpdateTarget = compiler.canUpdateTarget( compilerConfiguration );
@@ -834,25 +821,25 @@ public abstract class AbstractCompilerMojo
                     || incrementalBuildHelper.inputFileTreeChanged( incrementalBuildHelperRequest ) )
                     // CHECKSTYLE_ON: LineLength
                 {
-                    getLog().info( "Changes detected - recompiling the module!" );
+                    logger.info( "Changes detected - recompiling the module!" );
 
                     compilerConfiguration.setSourceFiles( sources );
                 }
                 else
                 {
-                    getLog().info( "Nothing to compile - all classes are up to date" );
+                    logger.info( "Nothing to compile - all classes are up to date" );
 
                     return;
                 }
             }
             catch ( CompilerException e )
             {
-                throw new MojoExecutionException( "Error while computing stale sources.", e );
+                throw new MojoException( "Error while computing stale sources.", e );
             }
         }
         else
         {
-            getLog().debug( "useIncrementalCompilation disabled" );
+            logger.debug( "useIncrementalCompilation disabled" );
             
             Set<File> staleSources;
             try
@@ -865,7 +852,7 @@ public abstract class AbstractCompilerMojo
                 if ( compiler.getCompilerOutputStyle().equals( CompilerOutputStyle.ONE_OUTPUT_FILE_FOR_ALL_INPUT_FILES )
                     && !canUpdateTarget )
                 {
-                    getLog().info( "RESCANNING!" );
+                    logger.info( "RESCANNING!" );
                     // TODO: This second scan for source files is sub-optimal
                     String inputFileEnding = compiler.getInputFileEnding( compilerConfiguration );
 
@@ -876,12 +863,12 @@ public abstract class AbstractCompilerMojo
             }
             catch ( CompilerException e )
             {
-                throw new MojoExecutionException( "Error while computing stale sources.", e );
+                throw new MojoException( "Error while computing stale sources.", e );
             }
 
             if ( staleSources.isEmpty() )
             {
-                getLog().info( "Nothing to compile - all classes are up to date" );
+                logger.info( "Nothing to compile - all classes are up to date" );
 
                 return;
             }
@@ -893,12 +880,12 @@ public abstract class AbstractCompilerMojo
                 // MCOMPILER-366: if sources contain the module-descriptor it must be used to define the modulepath
                 sources = getCompileSources( compiler, compilerConfiguration );
 
-                if ( getLog().isDebugEnabled() )
+                if ( logger.isDebugEnabled() )
                 {
-                    getLog().debug( "#sources: " + sources.size() );
+                    logger.debug( "#sources: " + sources.size() );
                     for ( File file : sources )
                     {
-                        getLog().debug( file.getPath() );
+                        logger.debug( file.getPath() );
                     }
                 }
 
@@ -906,7 +893,7 @@ public abstract class AbstractCompilerMojo
             }
             catch ( CompilerException e )
             {
-                throw new MojoExecutionException( "Error while computing stale sources.", e );
+                throw new MojoException( "Error while computing stale sources.", e );
             }
         }
        
@@ -959,29 +946,29 @@ public abstract class AbstractCompilerMojo
         // ----------------------------------------------------------------------
         // Dump configuration
         // ----------------------------------------------------------------------
-        if ( getLog().isDebugEnabled() )
+        if ( logger.isDebugEnabled() )
         {
-            getLog().debug( "Classpath:" );
+            logger.debug( "Classpath:" );
 
             for ( String s : getClasspathElements() )
             {
-                getLog().debug( " " + s );
+                logger.debug( " " + s );
             }
 
             if ( !getModulepathElements().isEmpty() )
             {
-                getLog().debug( "Modulepath:" );
+                logger.debug( "Modulepath:" );
                 for ( String s : getModulepathElements() )
                 {
-                    getLog().debug( " " + s );
+                    logger.debug( " " + s );
                 }
             }
 
-            getLog().debug( "Source roots:" );
+            logger.debug( "Source roots:" );
 
             for ( String root : getCompileSourceRoots() )
             {
-                getLog().debug( " " + root );
+                logger.debug( " " + root );
             }
 
             try
@@ -990,8 +977,8 @@ public abstract class AbstractCompilerMojo
                 {
                     if ( compilerConfiguration.getExecutable() != null )
                     {
-                        getLog().debug( "Excutable: " );
-                        getLog().debug( " " + compilerConfiguration.getExecutable() );
+                        logger.debug( "Excutable: " );
+                        logger.debug( " " + compilerConfiguration.getExecutable() );
                     }
                 }
 
@@ -1005,13 +992,13 @@ public abstract class AbstractCompilerMojo
                         sb.append( " " );
                         sb.append( cl[i] );
                     }
-                    getLog().debug( "Command line options:" );
-                    getLog().debug( sb );
+                    logger.debug( "Command line options:" );
+                    logger.debug( sb.toString() );
                 }
             }
             catch ( CompilerException ce )
             {
-                getLog().debug( ce );
+                logger.debug( ce.getMessage(), ce );
             }
         }
         
@@ -1095,7 +1082,7 @@ public abstract class AbstractCompilerMojo
                             }
                             else
                             {
-                                getLog().warn( "Can't locate " + file );
+                                logger.warn( "Can't locate " + file );
                             }
                         }
                         else if ( !values[0].equals( descriptor.name() ) )
@@ -1137,7 +1124,7 @@ public abstract class AbstractCompilerMojo
             }
             catch ( IOException e )
             {
-                getLog().warn( e.getMessage() );
+                logger.warn( e.getMessage() );
             }
         }
 
@@ -1148,7 +1135,7 @@ public abstract class AbstractCompilerMojo
 
         if ( StringUtils.isEmpty( compilerConfiguration.getSourceEncoding() ) )
         {
-            getLog().warn( "File encoding has not been set, using platform encoding " + ReaderFactory.FILE_ENCODING
+            logger.warn( "File encoding has not been set, using platform encoding " + ReaderFactory.FILE_ENCODING
                                + ", i.e. build is platform dependent!" );
         }
 
@@ -1161,7 +1148,7 @@ public abstract class AbstractCompilerMojo
 
             incrementalBuildHelper.beforeRebuildExecution( incrementalBuildHelperRequest );
 
-            getLog().debug( "incrementalBuildHelper#beforeRebuildExecution" );
+            logger.debug( "incrementalBuildHelper#beforeRebuildExecution" );
         }
 
         try
@@ -1179,20 +1166,20 @@ public abstract class AbstractCompilerMojo
         catch ( Exception e )
         {
             // TODO: don't catch Exception
-            throw new MojoExecutionException( "Fatal error compiling", e );
+            throw new MojoException( "Fatal error compiling", e );
         }
 
         if ( useIncrementalCompilation )
         {
             if ( incrementalBuildHelperRequest.getOutputDirectory().exists() )
             {
-                getLog().debug( "incrementalBuildHelper#afterRebuildExecution" );
+                logger.debug( "incrementalBuildHelper#afterRebuildExecution" );
                 // now scan the same directory again and create a diff
                 incrementalBuildHelper.afterRebuildExecution( incrementalBuildHelperRequest );
             }
             else
             {
-                getLog().debug(
+                logger.debug(
                     "skip incrementalBuildHelper#afterRebuildExecution as the output directory doesn't exist" );
             }
         }
@@ -1224,32 +1211,32 @@ public abstract class AbstractCompilerMojo
                 assert message.getKind() != CompilerMessage.Kind.ERROR
                     && message.getKind() != CompilerMessage.Kind.WARNING
                     && message.getKind() != CompilerMessage.Kind.MANDATORY_WARNING;
-                getLog().info( message.toString() );
+                logger.info( message.toString() );
             }
             if ( !warnings.isEmpty() )
             {
-                getLog().info( "-------------------------------------------------------------" );
-                getLog().warn( "COMPILATION WARNING : " );
-                getLog().info( "-------------------------------------------------------------" );
+                logger.info( "-------------------------------------------------------------" );
+                logger.warn( "COMPILATION WARNING : " );
+                logger.info( "-------------------------------------------------------------" );
                 for ( CompilerMessage warning : warnings )
                 {
-                    getLog().warn( warning.toString() );
+                    logger.warn( warning.toString() );
                 }
-                getLog().info( warnings.size() + ( ( warnings.size() > 1 ) ? " warnings " : " warning" ) );
-                getLog().info( "-------------------------------------------------------------" );
+                logger.info( warnings.size() + ( ( warnings.size() > 1 ) ? " warnings " : " warning" ) );
+                logger.info( "-------------------------------------------------------------" );
             }
 
             if ( !errors.isEmpty() )
             {
-                getLog().info( "-------------------------------------------------------------" );
-                getLog().error( "COMPILATION ERROR : " );
-                getLog().info( "-------------------------------------------------------------" );
+                logger.info( "-------------------------------------------------------------" );
+                logger.error( "COMPILATION ERROR : " );
+                logger.info( "-------------------------------------------------------------" );
                 for ( CompilerMessage error : errors )
                 {
-                    getLog().error( error.toString() );
+                    logger.error( error.toString() );
                 }
-                getLog().info( errors.size() + ( ( errors.size() > 1 ) ? " errors " : " error" ) );
-                getLog().info( "-------------------------------------------------------------" );
+                logger.info( errors.size() + ( ( errors.size() > 1 ) ? " errors " : " error" ) );
+                logger.info( "-------------------------------------------------------------" );
             }
 
             if ( !errors.isEmpty() )
@@ -1269,17 +1256,17 @@ public abstract class AbstractCompilerMojo
                 {
                     case NOTE:
                     case OTHER:
-                        getLog().info( message.toString() );
+                        logger.info( message.toString() );
                         break;
 
                     case ERROR:
-                        getLog().error( message.toString() );
+                        logger.error( message.toString() );
                         break;
 
                     case MANDATORY_WARNING:
                     case WARNING:
                     default:
-                        getLog().warn( message.toString() );
+                        logger.warn( message.toString() );
                         break;
                 }
             }
@@ -1318,7 +1305,7 @@ public abstract class AbstractCompilerMojo
      * @return all source files for the compiler
      */
     private Set<File> getCompileSources( Compiler compiler, CompilerConfiguration compilerConfiguration )
-        throws MojoExecutionException, CompilerException
+        throws MojoException, CompilerException
     {
         String inputFileEnding = compiler.getInputFileEnding( compilerConfiguration );
         if ( StringUtils.isEmpty( inputFileEnding ) )
@@ -1351,7 +1338,7 @@ public abstract class AbstractCompilerMojo
             }
             catch ( InclusionScanException e )
             {
-                throw new MojoExecutionException(
+                throw new MojoException(
                     "Error scanning source root: \'" + sourceRoot + "\' for stale files to recompile.", e );
             }
         }
@@ -1365,16 +1352,16 @@ public abstract class AbstractCompilerMojo
      * @return <code>true</code> if at least a single source file is newer than it's class file
      */
     private boolean isSourceChanged( CompilerConfiguration compilerConfiguration, Compiler compiler )
-        throws CompilerException, MojoExecutionException
+        throws CompilerException, MojoException
     {
         Set<File> staleSources =
             computeStaleSources( compilerConfiguration, compiler, getSourceInclusionScanner( staleMillis ) );
 
-        if ( getLog().isDebugEnabled() )
+        if ( logger.isDebugEnabled() )
         {
             for ( File f : staleSources )
             {
-                getLog().debug( "Stale source detected: " + f.getAbsolutePath() );
+                logger.debug( "Stale source detected: " + f.getAbsolutePath() );
             }
         }
         return !staleSources.isEmpty();
@@ -1398,7 +1385,7 @@ public abstract class AbstractCompilerMojo
         }
         catch ( Exception e )
         {
-            getLog().debug( "unable to get threadCount for the current build: " + e.getMessage() );
+            logger.debug( "unable to get threadCount for the current build: " + e.getMessage() );
         }
         return 1;
     }
@@ -1415,7 +1402,7 @@ public abstract class AbstractCompilerMojo
         }
         catch ( Exception e )
         {
-            getLog().debug( "unable to get start time for the current build: " + e.getMessage() );
+            logger.debug( "unable to get start time for the current build: " + e.getMessage() );
         }
 
         if ( buildStartTime == null )
@@ -1452,33 +1439,16 @@ public abstract class AbstractCompilerMojo
         
         if ( jdkToolchain != null )
         {
-            // Maven 3.3.1 has plugin execution scoped Toolchain Support
-            try
+            List<Toolchain> tcs = toolchainManager.getToolchains( session, "jdk", jdkToolchain );
+            if ( tcs != null && !tcs.isEmpty() )
             {
-                Method getToolchainsMethod =
-                    toolchainManager.getClass().getMethod( "getToolchains", MavenSession.class, String.class,
-                                                           Map.class );
-
-                @SuppressWarnings( "unchecked" )
-                List<Toolchain> tcs =
-                    (List<Toolchain>) getToolchainsMethod.invoke( toolchainManager, session, "jdk",
-                                                                  jdkToolchain );
-
-                if ( tcs != null && !tcs.isEmpty() )
-                {
-                    tc = tcs.get( 0 );
-                }
-            }
-            catch ( NoSuchMethodException | SecurityException | IllegalAccessException | IllegalArgumentException
-                | InvocationTargetException e )
-            {
-                // ignore
+                tc = tcs.get( 0 );
             }
         }
         
         if ( tc == null )
         {
-            tc = toolchainManager.getToolchainFromBuildContext( "jdk", session );
+            tc = toolchainManager.getToolchainFromBuildContext( session, "jdk" );
         }
         
         return tc;
@@ -1498,7 +1468,7 @@ public abstract class AbstractCompilerMojo
 
     private Set<File> computeStaleSources( CompilerConfiguration compilerConfiguration, Compiler compiler,
                                            SourceInclusionScanner scanner )
-        throws MojoExecutionException, CompilerException
+        throws MojoException, CompilerException
     {
         SourceMapping mapping = getSourceMapping( compilerConfiguration, compiler );
 
@@ -1532,7 +1502,7 @@ public abstract class AbstractCompilerMojo
             }
             catch ( InclusionScanException e )
             {
-                throw new MojoExecutionException(
+                throw new MojoException(
                     "Error scanning source root: \'" + sourceRoot + "\' for stale files to recompile.", e );
             }
         }
@@ -1541,7 +1511,7 @@ public abstract class AbstractCompilerMojo
     }
 
     private SourceMapping getSourceMapping( CompilerConfiguration compilerConfiguration, Compiler compiler )
-        throws CompilerException, MojoExecutionException
+        throws CompilerException, MojoException
     {
         CompilerOutputStyle outputStyle = compiler.getCompilerOutputStyle();
 
@@ -1559,7 +1529,7 @@ public abstract class AbstractCompilerMojo
         }
         else
         {
-            throw new MojoExecutionException( "Unknown compiler output style: '" + outputStyle + "'." );
+            throw new MojoException( "Unknown compiler output style: '" + outputStyle + "'." );
         }
         return mapping;
     }
@@ -1597,7 +1567,7 @@ public abstract class AbstractCompilerMojo
         if ( session == null )
         {
             // we just cannot determine it, so don't do anything beside logging
-            getLog().info( "Cannot determine build start date, skipping incremental build detection." );
+            logger.info( "Cannot determine build start date, skipping incremental build detection." );
             return false;
         }
 
@@ -1621,7 +1591,7 @@ public abstract class AbstractCompilerMojo
             {
                 if ( hasNewFile( artifactPath, buildStartTime ) )
                 {
-                    getLog().debug( "New dependency detected: " + artifactPath.getAbsolutePath() );
+                    logger.debug( "New dependency detected: " + artifactPath.getAbsolutePath() );
                     return true;
                 }
             }
@@ -1663,7 +1633,7 @@ public abstract class AbstractCompilerMojo
     }
 
     private List<String> resolveProcessorPathEntries()
-        throws MojoExecutionException
+        throws MojoException
     {
         if ( annotationProcessorPaths == null || annotationProcessorPaths.isEmpty() )
         {
@@ -1672,42 +1642,23 @@ public abstract class AbstractCompilerMojo
 
         try
         {
-            Set<String> elements = new LinkedHashSet<>();
-            for ( DependencyCoordinate coord : annotationProcessorPaths )
-            {
-                ArtifactHandler handler = artifactHandlerManager.getArtifactHandler( coord.getType() );
-
-                Artifact artifact = new DefaultArtifact(
-                     coord.getGroupId(),
-                     coord.getArtifactId(),
-                     VersionRange.createFromVersionSpec( coord.getVersion() ),
-                     Artifact.SCOPE_RUNTIME,
-                     coord.getType(),
-                     coord.getClassifier(),
-                     handler,
-                     false );
-
-                ArtifactResolutionRequest request = new ArtifactResolutionRequest()
-                                .setArtifact( artifact )
-                                .setResolveRoot( true )
-                                .setResolveTransitively( true )
-                                .setLocalRepository( session.getLocalRepository() )
-                                .setRemoteRepositories( project.getRemoteArtifactRepositories() );
-
-                ArtifactResolutionResult resolutionResult = repositorySystem.resolve( request );
-
-                resolutionErrorHandler.throwErrors( request, resolutionResult );
-
-                for ( Artifact resolved : resolutionResult.getArtifacts() )
-                {
-                    elements.add( resolved.getFile().getAbsolutePath() );
-                }
-            }
-            return new ArrayList<>( elements );
+            return annotationProcessorPaths.stream()
+                    .map( coord -> session.createArtifact( coord.getGroupId(), coord.getArtifactId(),
+                            coord.getClassifier(), coord.getVersion(), coord.getType() ) )
+                    .map( artifact -> session.createDependency( artifact ) )
+                    .map( dependency -> session
+                            .withRemoteRepositories( projectManager.getRepositories( project ) )
+                            .resolveDependencies( dependency ) )
+                    .flatMap( res -> res.getArtifactResults().stream() )
+                    .map( res -> res.getArtifact().getPath() )
+                    .filter( Optional::isPresent )
+                    .map( o -> o.get().toAbsolutePath().toString() )
+                    .distinct()
+                    .collect( Collectors.toList() );
         }
         catch ( Exception e )
         {
-            throw new MojoExecutionException( "Resolution of annotationProcessorPath dependencies failed: "
+            throw new MojoException( "Resolution of annotationProcessorPath dependencies failed: "
                 + e.getLocalizedMessage(), e );
         }
     }

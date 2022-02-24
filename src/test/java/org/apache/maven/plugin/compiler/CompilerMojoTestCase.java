@@ -47,6 +47,8 @@ import org.apache.maven.plugin.testing.AbstractMojoTestCase;
 import org.apache.maven.plugin.testing.stubs.ArtifactStub;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.languages.java.version.JavaVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class CompilerMojoTestCase
     extends AbstractMojoTestCase
@@ -82,11 +84,9 @@ public class CompilerMojoTestCase
         throws Exception
     {
         CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-basic-test/plugin-config.xml" );
-        
-        Log log = mock( Log.class );
-        
-        compileMojo.setLog( log );
-        
+
+        Logger log = LoggerFactory.getLogger( compileMojo.getClass() );
+
         compileMojo.execute();
 
         File testClass = new File( compileMojo.getOutputDirectory(), "TestCompile0.class" );
@@ -103,7 +103,7 @@ public class CompilerMojoTestCase
                        projectArtifact.getFile() );
 
         testClass = new File( testCompileMojo.getOutputDirectory(), "TestCompile0Test.class" );
-        
+
         verify( log ).warn( startsWith( "No explicit value set for target or release!" ) );
 
         assertTrue( testClass.exists() );
@@ -113,11 +113,9 @@ public class CompilerMojoTestCase
                     throws Exception
     {
         CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-basic-sourcetarget/plugin-config.xml" );
-        
-        Log log = mock( Log.class );
-        
-        compileMojo.setLog( log );
-        
+
+        Logger log = LoggerFactory.getLogger( compileMojo.getClass() );
+
         compileMojo.execute();
         
         verify( log, never() ).warn( startsWith( "No explicit value set for target or release!" ) );

@@ -24,7 +24,6 @@ import java.io.IOException;
 import java.util.List;
 
 import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
@@ -49,7 +48,7 @@ public class SourcePathReadGoal
 
     @SuppressWarnings( "unchecked" )
     public void execute()
-        throws MojoExecutionException, MojoFailureException
+        throws MojoExecutionException
     {
         if ( sourceClass != null )
         {
@@ -65,7 +64,7 @@ public class SourcePathReadGoal
     }
 
     private void assertGeneratedSourceFileFor( String sourceClass, List<String> sourceRoots )
-        throws MojoFailureException, MojoExecutionException
+        throws MojoExecutionException
     {
         String sourceFile = sourceClass.replace( '.', '/' )
                                        .concat( ".txt" );

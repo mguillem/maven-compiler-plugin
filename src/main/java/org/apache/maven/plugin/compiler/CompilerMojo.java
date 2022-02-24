@@ -31,17 +31,20 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Map.Entry;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.plugins.annotations.ResolutionScope;
-import org.apache.maven.project.MavenProject;
+import org.apache.maven.api.Artifact;
+import org.apache.maven.api.JavaToolchain;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.Toolchain;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Component;
+import org.apache.maven.api.plugin.annotations.LifecyclePhase;
+import org.apache.maven.api.plugin.annotations.Mojo;
+import org.apache.maven.api.plugin.annotations.Parameter;
+import org.apache.maven.api.plugin.annotations.ResolutionScope;
+import org.apache.maven.api.services.ArtifactManager;
+import org.apache.maven.api.services.ProjectManager;
 import org.apache.maven.shared.utils.StringUtils;
 import org.apache.maven.shared.utils.logging.MessageUtils;
-import org.apache.maven.toolchain.Toolchain;
-import org.apache.maven.toolchain.java.DefaultJavaToolChain;
 import org.codehaus.plexus.compiler.util.scan.SimpleSourceInclusionScanner;
 import org.codehaus.plexus.compiler.util.scan.SourceInclusionScanner;
 import org.codehaus.plexus.compiler.util.scan.StaleSourceScanner;
@@ -57,8 +60,8 @@ import org.codehaus.plexus.languages.java.jpms.ResolvePathsResult;
  * @author <a href="mailto:jason@maven.org">Jason van Zyl </a>
  * @since 2.0
  */
-@Mojo( name = "compile", defaultPhase = LifecyclePhase.COMPILE, threadSafe = true, 
-    requiresDependencyResolution = ResolutionScope.COMPILE )
+@Mojo( name = "compile", defaultPhase = LifecyclePhase.COMPILE,
+       requiresDependencyResolution = ResolutionScope.COMPILE )
 public class CompilerMojo
     extends AbstractCompilerMojo
 {
@@ -129,6 +132,9 @@ public class CompilerMojo
     @Parameter
     private boolean multiReleaseOutput;
 
+    @Component
+    private ArtifactManager artifactManager;
+
     final LocationManager locationManager = new LocationManager();
 
     private List<String> classpathElements;
@@ -175,24 +181,24 @@ public class CompilerMojo
     }
 
     public void execute()
-        throws MojoExecutionException, CompilationFailureException
+        throws MojoException, CompilationFailureException
     {
         if ( skipMain )
         {
-            getLog().info( "Not compiling main sources" );
+            logger.info( "Not compiling main sources" );
             return;
         }
         
         if ( multiReleaseOutput && release == null )
         {
-            throw new MojoExecutionException( "When using 'multiReleaseOutput' the release must be set" );
+            throw new MojoException( "When using 'multiReleaseOutput' the release must be set" );
         }
 
         super.execute();
 
         if ( outputDirectory.isDirectory() )
         {
-            projectArtifact.setFile( outputDirectory );
+            artifactManager.setPath( projectArtifact, outputDirectory.toPath() );
         }
     }
 
@@ -234,9 +240,9 @@ public class CompilerMojo
                                        .setMainModuleDescriptor( moduleDescriptorPath );
                 
                 Toolchain toolchain = getToolchain();
-                if ( toolchain instanceof DefaultJavaToolChain )
+                if ( toolchain instanceof JavaToolchain )
                 {
-                    request.setJdkHome( new File( ( (DefaultJavaToolChain) toolchain ).getJavaHome() ) );
+                    request.setJdkHome( new File( ( (JavaToolchain) toolchain ).getJavaHome() ) );
                 }
 
                 resolvePathsResult = locationManager.resolvePaths( request );
@@ -249,7 +255,7 @@ public class CompilerMojo
                         cause = cause.getCause();
                     }
                     String fileName = pathException.getKey().getName();
-                    getLog().warn( "Can't extract module name from " + fileName + ": " + cause.getMessage() );
+                    logger.warn( "Can't extract module name from " + fileName + ": " + cause.getMessage() );
                 }
                 
                 JavaModuleDescriptor moduleDescriptor = resolvePathsResult.getMainModuleDescriptor();
@@ -291,7 +297,7 @@ public class CompilerMojo
             }
             catch ( IOException e )
             {
-                getLog().warn( e.getMessage() );
+                logger.warn( e.getMessage() );
             }
         }
         else
@@ -326,7 +332,7 @@ public class CompilerMojo
             if ( moduleDescriptor.exports().isEmpty() )
             {
                 // application
-                getLog().info( message );
+                logger.info( message );
             }
             else
             {
@@ -336,14 +342,16 @@ public class CompilerMojo
         }
     }
     
-    private List<File> getCompileClasspathElements( MavenProject project )
+    private List<File> getCompileClasspathElements( Project project )
     {
-        // 3 is outputFolder + 2 preserved for multirelease  
-        List<File> list = new ArrayList<>( project.getArtifacts().size() + 3 );
+        // 3 is outputFolder + 2 preserved for multirelease
+        List<Artifact> artifacts = getProjectManager().getResolvedDependencies(
+                project, ProjectManager.ResolutionScope.Compile );
+        List<File> list = new ArrayList<>( artifacts.size() + 3 );
 
         if ( multiReleaseOutput )
         {
-            File versionsFolder = new File( project.getBuild().getOutputDirectory(), "META-INF/versions" );
+            File versionsFolder = new File( project.getModel().getBuild().getOutputDirectory(), "META-INF/versions" );
             
             // in reverse order
             for ( int version = Integer.parseInt( getRelease() ) - 1; version >= 9 ; version-- )
@@ -356,11 +364,11 @@ public class CompilerMojo
             }
         }
 
-        list.add( new File( project.getBuild().getOutputDirectory() ) );
+        list.add( new File( project.getModel().getBuild().getOutputDirectory() ) );
 
-        for ( Artifact a : project.getArtifacts() )
+        for ( Artifact a : artifacts )
         {
-            list.add( a.getFile() );
+            list.add( a.getPath().get().toFile() );
         }
         return list;
     }
@@ -427,8 +435,8 @@ public class CompilerMojo
     private void writeBoxedWarning( String message )
     {
         String line = StringUtils.repeat( "*", message.length() + 4 );
-        getLog().warn( line );
-        getLog().warn( "* " + MessageUtils.buffer().strong( message )  + " *" );
-        getLog().warn( line );
+        logger.warn( line );
+        logger.warn( "* " + MessageUtils.buffer().strong( message )  + " *" );
+        logger.warn( line );
     }
 }

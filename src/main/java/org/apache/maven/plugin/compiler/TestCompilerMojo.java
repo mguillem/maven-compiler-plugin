@@ -33,13 +33,13 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.plugins.annotations.ResolutionScope;
-import org.apache.maven.toolchain.Toolchain;
-import org.apache.maven.toolchain.java.DefaultJavaToolChain;
+import org.apache.maven.api.JavaToolchain;
+import org.apache.maven.api.Toolchain;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.LifecyclePhase;
+import org.apache.maven.api.plugin.annotations.Mojo;
+import org.apache.maven.api.plugin.annotations.Parameter;
+import org.apache.maven.api.plugin.annotations.ResolutionScope;
 import org.codehaus.plexus.compiler.util.scan.SimpleSourceInclusionScanner;
 import org.codehaus.plexus.compiler.util.scan.SourceInclusionScanner;
 import org.codehaus.plexus.compiler.util.scan.StaleSourceScanner;
@@ -54,8 +54,8 @@ import org.codehaus.plexus.languages.java.jpms.ResolvePathsResult;
  * @author <a href="mailto:jason@maven.org">Jason van Zyl</a>
  * @since 2.0
  */
-@Mojo( name = "testCompile", defaultPhase = LifecyclePhase.TEST_COMPILE, threadSafe = true,
-                requiresDependencyResolution = ResolutionScope.TEST )
+@Mojo( name = "testCompile", defaultPhase = LifecyclePhase.TEST_COMPILE,
+       requiresDependencyResolution = ResolutionScope.TEST )
 public class TestCompilerMojo
     extends AbstractCompilerMojo
 {
@@ -111,7 +111,7 @@ public class TestCompilerMojo
      * 
      * @since 3.6
      */
-    @Parameter ( property = "maven.compiler.testRelease" )
+    @Parameter( property = "maven.compiler.testRelease" )
     private String testRelease;
 
     /**
@@ -165,11 +165,11 @@ public class TestCompilerMojo
     private Collection<String> modulepathElements;
 
     public void execute()
-        throws MojoExecutionException, CompilationFailureException
+        throws MojoException, CompilationFailureException
     {
         if ( skip )
         {
-            getLog().info( "Not compiling test sources" );
+            logger.info( "Not compiling test sources" );
             return;
         }
         super.execute();
@@ -205,7 +205,7 @@ public class TestCompilerMojo
     @Override
     protected void preparePaths( Set<File> sourceFiles )
     {
-        File mainOutputDirectory = new File( getProject().getBuild().getOutputDirectory() );
+        File mainOutputDirectory = new File( getProject().getModel().getBuild().getOutputDirectory() );
 
         File mainModuleDescriptorClassFile = new File( mainOutputDirectory, "module-info.class" );
         JavaModuleDescriptor mainModuleDescriptor = null;
@@ -236,9 +236,9 @@ public class TestCompilerMojo
                                 .setMainModuleDescriptor( mainModuleDescriptorClassFile.getAbsolutePath() );
 
                 Toolchain toolchain = getToolchain();
-                if ( toolchain instanceof DefaultJavaToolChain )
+                if ( toolchain instanceof JavaToolchain )
                 {
-                    request.setJdkHome( ( (DefaultJavaToolChain) toolchain ).getJavaHome() );
+                    request.setJdkHome( ( (JavaToolchain) toolchain ).getJavaHome() );
                 }
 
                 result = locationManager.resolvePaths( request );
@@ -251,7 +251,7 @@ public class TestCompilerMojo
                         cause = cause.getCause();
                     }
                     String fileName = Paths.get( pathException.getKey() ).getFileName().toString();
-                    getLog().warn( "Can't extract module name from " + fileName + ": " + cause.getMessage() );
+                    logger.warn( "Can't extract module name from " + fileName + ": " + cause.getMessage() );
                 }
             }
             catch ( IOException e )
@@ -280,9 +280,9 @@ public class TestCompilerMojo
                                 .setMainModuleDescriptor( testModuleDescriptorJavaFile.getAbsolutePath() );
 
                 Toolchain toolchain = getToolchain();
-                if ( toolchain instanceof DefaultJavaToolChain )
+                if ( toolchain instanceof JavaToolchain )
                 {
-                    request.setJdkHome( ( (DefaultJavaToolChain) toolchain ).getJavaHome() );
+                    request.setJdkHome( ( (JavaToolchain) toolchain ).getJavaHome() );
                 }
 
                 result = locationManager.resolvePaths( request );
@@ -320,11 +320,11 @@ public class TestCompilerMojo
 
             if ( mainModuleDescriptor != null )
             {
-                if ( getLog().isDebugEnabled() )
+                if ( logger.isDebugEnabled() )
                 {
-                    getLog().debug( "Main and test module descriptors exist:" );
-                    getLog().debug( "  main module = " + mainModuleDescriptor.name() );
-                    getLog().debug( "  test module = " + testModuleDescriptor.name() );
+                    logger.debug( "Main and test module descriptors exist:" );
+                    logger.debug( "  main module = " + mainModuleDescriptor.name() );
+                    logger.debug( "  test module = " + testModuleDescriptor.name() );
                 }
 
                 if ( testModuleDescriptor.name().equals( mainModuleDescriptor.name() ) )
@@ -339,7 +339,7 @@ public class TestCompilerMojo
                     patchModuleValue.append( testModuleDescriptor.name() );
                     patchModuleValue.append( '=' );
 
-                    for ( String root : getProject().getCompileSourceRoots() )
+                    for ( String root : getProjectManager().getCompileSourceRoots( getProject() ) )
                     {
                         if ( Files.exists( Paths.get( root ) ) )
                         {
@@ -351,7 +351,7 @@ public class TestCompilerMojo
                 }
                 else
                 {
-                    getLog().debug( "Black-box testing - all is ready to compile" );
+                    logger.debug( "Black-box testing - all is ready to compile" );
                 }
             }
             else
