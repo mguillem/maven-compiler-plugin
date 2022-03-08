@@ -19,6 +19,17 @@ package org.apache.maven.plugin.compiler;
  * under the License.
  */
 
+import javax.inject.Inject;
+
+import static org.apache.maven.api.plugin.testing.MojoExtension.getVariableValueFromObject;
+import static org.apache.maven.api.plugin.testing.MojoExtension.setVariableValueToObject;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -34,56 +45,56 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.handler.ArtifactHandler;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.plugin.MojoExecution;
+import com.google.inject.Provides;
+import org.apache.maven.api.Artifact;
+import org.apache.maven.api.MojoExecution;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.services.ArtifactManager;
+import org.apache.maven.api.services.ProjectManager;
+import org.apache.maven.api.services.ToolchainManager;
+import org.apache.maven.model.Build;
+import org.apache.maven.model.Model;
+import org.apache.maven.model.Plugin;
 import org.apache.maven.plugin.compiler.stubs.CompilerManagerStub;
-import org.apache.maven.plugin.compiler.stubs.DebugEnabledLog;
-import org.apache.maven.plugin.descriptor.MojoDescriptor;
-import org.apache.maven.plugin.descriptor.PluginDescriptor;
-import org.apache.maven.plugin.logging.Log;
-import org.apache.maven.plugin.testing.AbstractMojoTestCase;
-import org.apache.maven.plugin.testing.stubs.ArtifactStub;
-import org.apache.maven.project.MavenProject;
-import org.codehaus.plexus.languages.java.version.JavaVersion;
+import org.apache.maven.api.plugin.testing.InjectMojo;
+import org.apache.maven.api.plugin.testing.MojoTest;
+import org.apache.maven.api.plugin.testing.stubs.ArtifactStub;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@MojoTest
 public class CompilerMojoTestCase
-    extends AbstractMojoTestCase
 {
     
     private String source = AbstractCompilerMojo.DEFAULT_SOURCE;
 
     private String target = AbstractCompilerMojo.DEFAULT_TARGET;
-    
-    @Override
-    protected void setUp()
-        throws Exception
-    {
-        super.setUp();
-        
-        String javaSpec = System.getProperty( "java.specification.version" );
-        // It is needed to set target/source to JDK 7 for JDK12+
-        // because this is the lowest version which is supported by those JDK's.
-        // The default source/target "6" is not supported anymore.
-        if ( JavaVersion.parse( javaSpec ).isAtLeast( "12" ) )
-        {
-            source = "7";
-            target = "7";
-        }
-    }
-    
+
+    @Inject
+    private Session session;
+
+    @Inject
+    private ProjectManager projectManager;
+
+    @Inject
+    private ArtifactManager artifactManager;
+
     /**
      * tests the ability of the plugin to compile a basic file
-     *
-     * @throws Exception
      */
-    public void testCompilerBasic()
+    @Test
+    public void testCompilerBasic(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-basic-test/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-basic-test/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-basic-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         Logger log = LoggerFactory.getLogger( compileMojo.getClass() );
 
@@ -93,14 +104,12 @@ public class CompilerMojoTestCase
 
         assertTrue( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo =
-            getTestCompilerMojo( compileMojo, "target/test-classes/unit/compiler-basic-test/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
 
         testCompileMojo.execute();
 
         Artifact projectArtifact = (Artifact) getVariableValueFromObject( compileMojo, "projectArtifact" );
-        assertNotNull( "MCOMPILER-94: artifact file should only be null if there is nothing to compile",
-                       projectArtifact.getFile() );
+        assertFalse( artifactManager.getPath( projectArtifact ).isPresent(), "MCOMPILER-94: artifact file should be null if there is nothing to compile" );
 
         testClass = new File( testCompileMojo.getOutputDirectory(), "TestCompile0Test.class" );
 
@@ -108,11 +117,13 @@ public class CompilerMojoTestCase
 
         assertTrue( testClass.exists() );
     }
-    
-    public void testCompilerBasicSourceTarget()
+
+    @Test
+    @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-basic-sourcetarget/plugin-config.xml"  )
+    public void testCompilerBasicSourceTarget( CompilerMojo compileMojo )
                     throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-basic-sourcetarget/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         Logger log = LoggerFactory.getLogger( compileMojo.getClass() );
 
@@ -126,22 +137,26 @@ public class CompilerMojoTestCase
      *
      * @throws Exception
      */
-    public void testCompilerEmptySource()
+    @Test
+    public void testCompilerEmptySource(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-empty-source-test/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-empty-source-test/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo =
-            getCompilerMojo( "target/test-classes/unit/compiler-empty-source-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         compileMojo.execute();
 
         assertFalse( compileMojo.getOutputDirectory().exists() );
 
         Artifact projectArtifact = (Artifact) getVariableValueFromObject( compileMojo, "projectArtifact" );
-        assertNull( "MCOMPILER-94: artifact file should be null if there is nothing to compile",
-                    projectArtifact.getFile() );
+        assertFalse( artifactManager.getPath( projectArtifact ).isPresent(), "MCOMPILER-94: artifact file should be null if there is nothing to compile" );
 
-        TestCompilerMojo testCompileMojo =
-            getTestCompilerMojo( compileMojo, "target/test-classes/unit/compiler-empty-source-test/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
 
         testCompileMojo.execute();
 
@@ -150,14 +165,18 @@ public class CompilerMojoTestCase
 
     /**
      * tests the ability of the plugin to respond to includes and excludes correctly
-     *
-     * @throws Exception
      */
-    public void testCompilerIncludesExcludes()
+    @Test
+    public void testCompilerIncludesExcludes(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-includes-excludes-test/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-includes-excludes-test/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo =
-            getCompilerMojo( "target/test-classes/unit/compiler-includes-excludes-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         Set<String> includes = new HashSet<>();
         includes.add( "**/TestCompile4*.java" );
@@ -179,8 +198,7 @@ public class CompilerMojoTestCase
         testClass = new File( compileMojo.getOutputDirectory(), "TestCompile4.class" );
         assertTrue( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo = getTestCompilerMojo( compileMojo,
-                                                                "target/test-classes/unit/compiler-includes-excludes-test/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
 
         setVariableValueToObject( testCompileMojo, "testIncludes", includes );
         setVariableValueToObject( testCompileMojo, "testExcludes", excludes );
@@ -199,13 +217,19 @@ public class CompilerMojoTestCase
 
     /**
      * tests the ability of the plugin to fork and successfully compile
-     *
-     * @throws Exception
      */
-    public void testCompilerFork()
+    @Test
+    @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-fork-test/plugin-config.xml"  )
+    public void testCompilerFork(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-fork-test/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-fork-test/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-fork-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         // JAVA_HOME doesn't have to be on the PATH.
         setVariableValueToObject( compileMojo, "executable",  new File( System.getenv( "JAVA_HOME" ), "bin/javac" ).getPath() );
@@ -215,8 +239,7 @@ public class CompilerMojoTestCase
         File testClass = new File( compileMojo.getOutputDirectory(), "TestCompile1.class" );
         assertTrue( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo =
-            getTestCompilerMojo( compileMojo, "target/test-classes/unit/compiler-fork-test/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
 
         // JAVA_HOME doesn't have to be on the PATH.
         setVariableValueToObject( testCompileMojo, "executable",  new File( System.getenv( "JAVA_HOME" ), "bin/javac" ).getPath() );
@@ -227,11 +250,17 @@ public class CompilerMojoTestCase
         assertTrue( testClass.exists() );
     }
 
-    public void testOneOutputFileForAllInput()
+    @Test
+    public void testOneOutputFileForAllInput(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-one-output-file-test/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-one-output-file-test/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo =
-            getCompilerMojo( "target/test-classes/unit/compiler-one-output-file-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         setVariableValueToObject( compileMojo, "compilerManager", new CompilerManagerStub() );
 
@@ -240,8 +269,7 @@ public class CompilerMojoTestCase
         File testClass = new File( compileMojo.getOutputDirectory(), "compiled.class" );
         assertTrue( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo = getTestCompilerMojo( compileMojo,
-                                                                "target/test-classes/unit/compiler-one-output-file-test/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
 
         setVariableValueToObject( testCompileMojo, "compilerManager", new CompilerManagerStub() );
 
@@ -251,10 +279,12 @@ public class CompilerMojoTestCase
         assertTrue( testClass.exists() );
     }
 
-    public void testCompilerArgs()
+    @Test
+    @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-args-test/plugin-config.xml"  )
+    public void testCompilerArgs( CompilerMojo compileMojo )
         throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-args-test/plugin-config.xml" );
+         configureMojo( compileMojo );
 
         setVariableValueToObject( compileMojo, "compilerManager", new CompilerManagerStub() );
 
@@ -265,11 +295,17 @@ public class CompilerMojoTestCase
         assertEquals( Arrays.asList( "key1=value1","-Xlint","-my&special:param-with+chars/not>allowed_in_XML_element_names" ), compileMojo.compilerArgs );
     }
 
-    public void testOneOutputFileForAllInput2()
+    @Test
+    public void testOneOutputFileForAllInput2(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-one-output-file-test2/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-one-output-file-test2/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo =
-            getCompilerMojo( "target/test-classes/unit/compiler-one-output-file-test2/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         setVariableValueToObject( compileMojo, "compilerManager", new CompilerManagerStub() );
 
@@ -287,8 +323,7 @@ public class CompilerMojoTestCase
         File testClass = new File( compileMojo.getOutputDirectory(), "compiled.class" );
         assertTrue( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo = getTestCompilerMojo( compileMojo,
-                                                                "target/test-classes/unit/compiler-one-output-file-test2/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
 
         setVariableValueToObject( testCompileMojo, "compilerManager", new CompilerManagerStub() );
         setVariableValueToObject( testCompileMojo, "testIncludes", includes );
@@ -300,98 +335,90 @@ public class CompilerMojoTestCase
         assertTrue( testClass.exists() );
     }
 
-    public void testCompileFailure()
+    @Test
+    @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-fail-test/plugin-config.xml"  )
+    public void testCompileFailure( CompilerMojo compileMojo )
         throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-fail-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         setVariableValueToObject( compileMojo, "compilerManager", new CompilerManagerStub( true ) );
 
-        try
-        {
-            compileMojo.execute();
-
-            fail( "Should throw an exception" );
-        }
-        catch ( CompilationFailureException e )
-        {
-            //expected
-        }
+        assertThrows( CompilationFailureException.class, compileMojo::execute, "Should throw an exception" );
     }
 
-    public void testCompileFailOnError()
+    @Test
+    @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-failonerror-test/plugin-config.xml"  )
+    public void testCompileFailOnError( CompilerMojo compileMojo )
         throws Exception
     {
-        CompilerMojo compileMojo =
-            getCompilerMojo( "target/test-classes/unit/compiler-failonerror-test/plugin-config.xml" );
+        configureMojo( compileMojo );
 
         setVariableValueToObject( compileMojo, "compilerManager", new CompilerManagerStub( true ) );
 
-        try
-        {
-            compileMojo.execute();
-            assertTrue( true );
-        }
-        catch ( CompilationFailureException e )
-        {
-            fail( "The compilation error should have been consumed because failOnError = false" );
-        }
+        assertDoesNotThrow( compileMojo::execute, "The compilation error should have been consumed because failOnError = false" );
     }
     
     /**
      * Tests that setting 'skipMain' to true skips compilation of the main Java source files, but that test Java source
      * files are still compiled.
-     * @throws Exception
      */
-    public void testCompileSkipMain()
-        throws Exception
+    @Test
+    public void testCompileSkipMain(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-skip-main/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-skip-main/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
+            throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-skip-main/plugin-config.xml" );
+        configureMojo( compileMojo );
         setVariableValueToObject( compileMojo, "skipMain", true );
         compileMojo.execute();
         File testClass = new File( compileMojo.getOutputDirectory(), "TestSkipMainCompile0.class" );
         assertFalse( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo =
-            getTestCompilerMojo( compileMojo, "target/test-classes/unit/compiler-skip-main/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
         testCompileMojo.execute();
         testClass = new File( testCompileMojo.getOutputDirectory(), "TestSkipMainCompile0Test.class" );
         assertTrue( testClass.exists() );
     }
-    
+
     /**
      * Tests that setting 'skip' to true skips compilation of the test Java source files, but that main Java source
      * files are still compiled.
-     * @throws Exception
      */
-    public void testCompileSkipTest()
+    @Test
+    public void testCompileSkipTest(
+            @InjectMojo( goal = "compile", pom = "classpath:/unit/compiler-skip-test/plugin-config.xml"  )
+            CompilerMojo compileMojo,
+
+            @InjectMojo( goal = "testCompile", pom = "classpath:/unit/compiler-skip-test/plugin-config.xml"  )
+            TestCompilerMojo testCompileMojo
+    )
         throws Exception
     {
-        CompilerMojo compileMojo = getCompilerMojo( "target/test-classes/unit/compiler-skip-test/plugin-config.xml" );
+        configureMojo( compileMojo );
         compileMojo.execute();
         File testClass = new File( compileMojo.getOutputDirectory(), "TestSkipTestCompile0.class" );
         assertTrue( testClass.exists() );
 
-        TestCompilerMojo testCompileMojo =
-            getTestCompilerMojo( compileMojo, "target/test-classes/unit/compiler-skip-test/plugin-config.xml" );
+        configureMojo( compileMojo, testCompileMojo );
         setVariableValueToObject( testCompileMojo, "skip", true );
         testCompileMojo.execute();
         testClass = new File( testCompileMojo.getOutputDirectory(), "TestSkipTestCompile0Test.class" );
         assertFalse( testClass.exists() );
     }
 
-    private CompilerMojo getCompilerMojo( String pomXml )
+    private CompilerMojo configureMojo( CompilerMojo mojo )
         throws Exception
     {
-        File testPom = new File( getBasedir(), pomXml );
-
-        CompilerMojo mojo = (CompilerMojo) lookupMojo( "compile", testPom );
-
-        setVariableValueToObject( mojo, "log", new DebugEnabledLog() );
+//        setVariableValueToObject( mojo, "log", new DebugEnabledLog() );
         setVariableValueToObject( mojo, "projectArtifact", new ArtifactStub() );
         setVariableValueToObject( mojo, "compilePath", Collections.EMPTY_LIST );
-        setVariableValueToObject( mojo, "session", getMockMavenSession() );
-        setVariableValueToObject( mojo, "project", getMockMavenProject() );
+        setVariableValueToObject( mojo, "session", session );
+        setVariableValueToObject( mojo, "project", getMockProject() );
         setVariableValueToObject( mojo, "mojoExecution", getMockMojoExecution() );
         setVariableValueToObject( mojo, "source", source );
         setVariableValueToObject( mojo, "target", target );
@@ -399,26 +426,24 @@ public class CompilerMojoTestCase
         return mojo;
     }
 
-    private TestCompilerMojo getTestCompilerMojo( CompilerMojo compilerMojo, String pomXml )
+    private TestCompilerMojo configureMojo( CompilerMojo compilerMojo, TestCompilerMojo mojo )
         throws Exception
     {
-        File testPom = new File( getBasedir(), pomXml );
+//        File testPom = new File( getBasedir(), pomXml );
 
-        TestCompilerMojo mojo = (TestCompilerMojo) lookupMojo( "testCompile", testPom );
-
-        setVariableValueToObject( mojo, "log", new DebugEnabledLog() );
-
-        File buildDir = (File) getVariableValueFromObject( compilerMojo, "buildDirectory" );
-        File testClassesDir = new File( buildDir, "test-classes" );
-        setVariableValueToObject( mojo, "outputDirectory", testClassesDir );
-
+//        setVariableValueToObject( mojo, "log", new DebugEnabledLog() );
+//
+//        File buildDir = (File) getVariableValueFromObject( compilerMojo, "buildDirectory" );
+//        File testClassesDir = new File( buildDir, "test-classes" );
+//        setVariableValueToObject( mojo, "outputDirectory", testClassesDir );
+//
         List<String> testClasspathList = new ArrayList<>();
-        
-        Artifact junitArtifact = mock( Artifact.class );
-        ArtifactHandler handler = mock( ArtifactHandler.class );
-        when( handler.isAddedToClasspath() ).thenReturn( true );
-        when( junitArtifact.getArtifactHandler() ).thenReturn( handler );
-
+//
+//        Artifact ll junitArtifact = mock( Artifact.class );
+//        ArtifactHandler handler = mock( ArtifactHandler.class );
+//        when( handler.isAddedToClasspath() ).thenReturn( true );
+//        when( junitArtifact.getArtifactHandler() ).thenReturn( handler );
+//
         File artifactFile;
         String localRepository = System.getProperty( "localRepository" );
         if ( localRepository != null )
@@ -427,12 +452,12 @@ public class CompilerMojoTestCase
         }
         else
         {
-            // for IDE
+//             for IDE
             String junitURI = org.junit.Test.class.getResource( "Test.class" ).toURI().toString();
             junitURI = junitURI.substring( "jar:".length(), junitURI.indexOf( '!' ) );
             artifactFile = new File( URI.create( junitURI ) );
         }
-        when ( junitArtifact.getFile() ).thenReturn( artifactFile );
+//        when ( junitArtifact.getFile() ).thenReturn( artifactFile );
         
         testClasspathList.add( artifactFile.getAbsolutePath() );
         testClasspathList.add( compilerMojo.getOutputDirectory().getPath() );
@@ -440,51 +465,86 @@ public class CompilerMojoTestCase
         String testSourceRoot = testPom.getParent() + "/src/test/java";
         setVariableValueToObject( mojo, "compileSourceRoots", Collections.singletonList( testSourceRoot ) );
 
-        MavenProject project = getMockMavenProject();
-        project.setFile( testPom );
-        project.addCompileSourceRoot("/src/main/java" );
-        project.setArtifacts( Collections.singleton( junitArtifact )  );
-        project.getBuild().setOutputDirectory( new File( buildDir, "classes" ).getAbsolutePath() );
-        setVariableValueToObject( mojo, "project", project );
+        Project project = getMockProject();
+//        project.setFile( testPom );
+//        project.addCompileSourceRoot("/src/main/java" );
+//        project.setArtifacts( Collections.singleton( junitArtifact )  );
+//        project.getBuild().setOutputDirectory( new File( buildDir, "classes" ).getAbsolutePath() );
+        setVariableValueToObject( mojo, "project",  getMockProject() );
         setVariableValueToObject( mojo, "testPath", testClasspathList );
-        setVariableValueToObject( mojo, "session", getMockMavenSession() );
+        setVariableValueToObject( mojo, "session", session );
         setVariableValueToObject( mojo, "mojoExecution", getMockMojoExecution() );
         setVariableValueToObject( mojo, "source", source );
         setVariableValueToObject( mojo, "target", target );
-
         return mojo;
     }
-    
-    private MavenProject getMockMavenProject()
+
+    @Provides
+    private Project getMockProject()
     {
-        MavenProject mp = new MavenProject();
-        mp.getBuild().setDirectory( "target" );
-        mp.getBuild().setOutputDirectory( "target/classes" );
-        mp.getBuild().setSourceDirectory( "src/main/java" );
-        mp.getBuild().setTestOutputDirectory( "target/test-classes" );
-        return mp;
+        Model model = new Model();
+        model.setGroupId( "unknown" );
+        model.setArtifactId( "empty-project" );
+        model.setVersion( "0" );
+        model.setBuild( new Build() );
+        model.getBuild().setDirectory( "target" );
+        model.getBuild().setOutputDirectory( "target/classes" );
+        model.getBuild().setSourceDirectory( "src/main/java" );
+        model.getBuild().setTestOutputDirectory( "target/test-classes" );
+        Project project = mock( Project.class );
+        when( project.getModel() ).thenReturn( model );
+        return project;
     }
 
-    private MavenSession getMockMavenSession()
+    @Provides
+    private Session getMockSession( ProjectManager projectManager )
     {
-        MavenSession session = mock( MavenSession.class );
+        Session session = mock( Session.class );
         // when( session.getPluginContext( isA(PluginDescriptor.class), isA(MavenProject.class) ) ).thenReturn(
         // Collections.emptyMap() );
-        when( session.getCurrentProject() ).thenReturn( getMockMavenProject() );
+//        when( session.getCurrentProject() ).thenReturn( getMockMavenProject() );
+
+        when( session.getService( ProjectManager.class ) ).thenReturn( projectManager );
         return session;
     }
 
+    @Provides
+    private ProjectManager getMockProjectManager()
+    {
+        ProjectManager projectManager = mock( ProjectManager.class );
+        return projectManager;
+    }
+
+    @Provides
+    private ArtifactManager getMockArtifactManager()
+    {
+        ArtifactManager artifactManager = mock( ArtifactManager.class );
+        return artifactManager;
+    }
+
+    @Provides
+    private ToolchainManager getMockToolchainManager()
+    {
+        ToolchainManager toolchainManager = mock( ToolchainManager.class );
+        return toolchainManager;
+    }
+
+    @Provides
     private MojoExecution getMockMojoExecution()
     {
-        MojoDescriptor md = new MojoDescriptor();
-        md.setGoal( "compile" );
+//        MojoDescriptor md = new MojoDescriptor();
+//        md.setGoal( "compile" );
+//
+//        PluginDescriptor pd = new PluginDescriptor();
+//        pd.setArtifactId( "maven-compiler-plugin" );
+//        md.setPluginDescriptor( pd );
 
-        MojoExecution me = new MojoExecution( md );
+        Plugin plugin = new Plugin();
+        plugin.setArtifactId( "maven-compiler-plugin" );
 
-        PluginDescriptor pd = new PluginDescriptor();
-        pd.setArtifactId( "maven-compiler-plugin" );
-        md.setPluginDescriptor( pd );
-
+        MojoExecution me = mock( MojoExecution.class );
+        when( me.getPlugin() ).thenReturn( plugin );
+        when( me.getGoal() ).thenReturn( "compile" );
         return me;
     }
 }
